@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html>
+  <head>
+	<title>Shapegame</title>
+	<meta charset="utf-8"/>
+	<link rel="preconnect" href="https://fonts.gstatic.com">
+	<link href="https://fonts.googleapis.com/css2?family=Open+Sans&family=Roboto:wght@100;300&display=swap" rel="stylesheet">
+	<script src="plotly-latest.min.js"></script>
+	<script src="pico.js"></script>
+	<script src="camvas.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+	<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+	<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh"></script>
+	<script type="text/javascript">
+		const OUTLIER_THRESHOLD = 2000;
+		var redColor = '#ff0000';
+		var blueColor = '#0000ff';
+		var canvasSize = [200, 200];
+
+		var started = false;
+		var startTime = undefined;
+		var expectingClick = false;
+		var missedClicks = 0;
+		var errorClicks = 0;
+		var anticipatoryClicks = 0;
+		var delayTimer = undefined;
+		var correct = 0;
+		var totalClicks = 0;
+		var timesShapesShown = [0, 0, 0, 0];
+		var delays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Correct', marker: {color: 'rgb(0, 255, 0)'}};
+		var impulsiveDelays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Comission error', marker: {color: 'rgb(255, 0, 0)'}};
+		var outlierDelays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Anticipatory', marker: {color: 'rgb(170, 100, 0)'}};
+		var missed = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Omission', marker: {color: 'rgb(0, 0, 0)'}};
+		var events = [];
+		var lastShape = undefined;
+        var canvas = undefined; 
+		var ctx = undefined;
+
+		var timeLimit = 10 * 60 * 1000;
+
+		window.addEventListener("click", clickEvent);
+		window.addEventListener('keydown', function(e) {
+			if (e.keyCode == 32) {
+				clickEvent(e);
+			}
+		});
+		
+		function clearVariables() {
+			startTime = undefined;
+			expectingClick = false;
+			missedClicks = 0;
+			errorClicks = 0;
+			anticipatoryClicks = 0;
+			delayTimer = undefined;
+			correct = 0;
+			totalClicks = 0;
+			timesShapesShown = [0, 0, 0, 0];
+			delays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Correct', marker: {color: 'rgb(0, 255, 0)'}};
+			impulsiveDelays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Comission error', marker: {color: 'rgb(255, 0, 0)'}};
+			outlierDelays = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Anticipatory', marker: {color: 'rgb(170, 100, 0)'}};
+			missed = {x: [], y: [], mode: 'markers', type: 'scatter', name: 'Omission', marker: {color: 'rgb(0, 0, 0)'}};
+			events = [];
+			lastShape = undefined;
+		}
+
+		function clickEvent(evt) {
+			if (started) {
+				totalClicks++;				
+				let delta = endDelayTimer();
+				if (expectingClick) {	
+					correct++;
+					expectingClick = 0;
+					
+					delays['x'].push(new Date());
+					delays['y'].push(delta);
+				} else {
+					if (delta > OUTLIER_THRESHOLD) {
+						anticipatoryClicks++;
+						outlierDelays['x'].push(new Date());
+						outlierDelays['y'].push(delta);
+					} else {
+						errorClicks++;
+						impulsiveDelays['x'].push(new Date());
+						impulsiveDelays['y'].push(delta);
+					}
+				}
+				printStats();
+			}
+		}
+
+		function startDelayTimer() {				
+			delayTimer = new Date();
+		}
+
+		function endDelayTimer() {
+			let delta = undefined;
+			if (delayTimer) {
+				delta = new Date() - delayTimer;
+				delayTimer = undefined;
+			}
+			return delta;
+		}
+
+		function drawMovementGraphBackground() {
+			let ctx = document.getElementById("movement").getContext('2d');
+			ctx.beginPath();
+			ctx.moveTo(0, 240);
+			ctx.lineTo(640, 240)
+			ctx.lineWidth = 0.5;
+			ctx.strokeStyle = 'gray';
+			ctx.stroke();
+
+			ctx.beginPath();
+			ctx.moveTo(320, 0);
+			ctx.lineTo(320, 640)
+			ctx.lineWidth = 0.5;
+			ctx.strokeStyle = 'gray';
+			ctx.stroke();
+		}
+
+		function init() {
+			clearVariables();
+			drawMovementGraphBackground();
+			startTracking();
+			let minutesField = document.getElementById("testLengthFieldMinutes");
+			let secondsField = document.getElementById("testLengthFieldSeconds");
+			let minutes = parseInt(minutesField.value);
+			let seconds = parseInt(secondsField.value);
+						
+			timeLimit = (minutes * 60 + seconds) * 1000;
+			if (timeLimit <= 0) {
+				return
+			}
+			
+			setTimeout(() => {
+				started = true;
+
+
+				let graphElement = document.getElementById('finalGraph');
+				Plotly.purge(graphElement);
+
+				let startButton = document.getElementById('wrapper');
+				startButton.style.display = "none";
+				canvas = document.getElementById('canvas');
+				ctx = canvas.getContext('2d');
+
+				startTime = new Date();
+				main();
+			
+			}, 500);
+		}
+
+		function endTest() {
+			let currentTime = new Date();
+			let delta = currentTime - startTime;
+			if (delta > timeLimit) {
+				console.log("Stop");
+				printStats();
+				stopTracking();
+
+				window.setTimeout(() => {
+					let movementCanvas = document.getElementById("movement").style.display = 'block'; // make movement graph visible
+					let graphElement = document.getElementById('finalGraph');
+					Plotly.newPlot(graphElement, [delays, impulsiveDelays, missed, outlierDelays], { margin: { t: 0 } })
+					let startButton = document.getElementById('wrapper');
+					startButton.style.display = "block";
+					started = false;
+				}, 500);
+				return true;
+			} else false
+		}
+
+		function main() {
+			if (endTest()) return;
+			let maxTimeout = 3000;
+			let minTimeout = 1000;
+			let randomTimeout = Math.floor(Math.random() * maxTimeout + minTimeout);
+			// draw a random shape
+			window.setTimeout(()=> {															
+				requestAnimationFrame(draw);
+				let maxTimeout = 300;
+				let minTimeout = 600;
+				let randomTimeout = Math.floor(Math.random() * maxTimeout + minTimeout);
+				// clean the shape
+				window.setTimeout(clear, randomTimeout);										
+				main();
+			}, randomTimeout);
+		}
+
+		function headTrackingEvent(x, y, z){
+			console.log(x);
+			console.log(y);
+			console.log(z);
+		}
+
+		function printStats() {
+			console.clear();
+			console.log("Test length: " + Math.floor((new Date() - startTime)/1000) + "/" + timeLimit/1000 + " seconds");
+			console.log("Correct clicks: " + correct);
+			console.log("Impulsive clicks: " + errorClicks);
+			console.log("Anticipatory clicks: " + anticipatoryClicks);
+			console.log("Missed clicks: " + missedClicks);
+			console.log("Total clicks:" + totalClicks);
+			console.log("Shapes shown: " + timesShapesShown);
+			console.log("Tracking active: " + trackingActive);
+			console.log("**********")
+		}
+
+		function drawCircle(ctx, color) {
+			ctx.fillStyle = color;
+			ctx.beginPath();
+			ctx.arc(canvasSize[0]/2, canvasSize[1]/2, 100, 0, Math.PI*2);
+			ctx.fill();
+		}
+
+		function drawRectangle(ctx, color) {
+			ctx.fillStyle = color;
+			ctx.fillRect(0, 0, canvasSize[0], canvasSize[1]);
+		}
+
+		function clear() {
+			ctx.clearRect(0, 0, canvasSize[0], canvasSize[1]); // clear canvas
+		}
+
+		function draw() {	
+			startDelayTimer();			
+			if (expectingClick) {
+				missedClicks++;
+				expectingClick = 0;
+				missed['x'].push(new Date());
+				missed['y'].push(1);
+			}
+			let randInt = Math.floor(Math.random() * 10) % 4;
+
+			if (lastShape == randInt) {					
+				expectingClick = 1;
+			} else {
+				expectingClick = 0;
+			}
+			
+			lastShape = randInt;
+			timesShapesShown[randInt]++;
+
+			events.push({
+				time: new Date(), 
+				shapeType: randInt,
+				event: "drawEvent"
+			})
+
+			switch(randInt) {
+				case 0:
+					drawRectangle(ctx, redColor);
+					break;
+				case 1:
+					drawRectangle(ctx, blueColor);
+					break;
+				case 2:
+					drawCircle(ctx, redColor);
+					break;
+				case 3:
+					drawCircle(ctx, blueColor);
+					break;
+			}
+				
+			printStats();
+		}
+		function onTimeChange(e) {
+			if(isNaN(parseInt(e.value))) e.value = 0
+			else if ( parseInt(e.value) >= 60) e.value = 59
+		}
+		function onSecChange(e) {
+			onTimeChange(e);
+			localStorage.setItem('sec', e.value);
+		}
+		function onMinChange(e) {
+			onTimeChange(e);
+			localStorage.setItem('min', e.value);
+		}
+		function onPageLoad() {
+			if (localStorage.getItem('min')) document.getElementById('testLengthFieldMinutes').value=localStorage.getItem('min');
+			if (localStorage.getItem('sec')) document.getElementById('testLengthFieldSeconds').value=localStorage.getItem('sec');
+		}
+		var tracking_initialized = false;
+		var mycamvas = undefined;
+		var prevCoords = undefined;
+		var trackingActive = undefined;
+		function stopTracking() {
+			trackingActive = false;
+		}
+		function stopper() {
+			return trackingActive;
+		}
+		function startTracking() {
+			trackingActive = true;
+			/*
+				(0) check whether we're already running face detection
+			*/
+			if(tracking_initialized)
+				return; // if yes, then do not initialize everything again
+			/*
+				(1) initialize the pico.js face detector
+			*/
+			var update_memory = pico.instantiate_detection_memory(5); // we will use the detecions of the last 5 frames
+			var facefinder_classify_region = function(r, c, s, pixels, ldim) {return -1.0;};
+			var cascadeurl = 'facefinder';
+			var cascadeurl = 'https://raw.githubusercontent.com/nenadmarkus/pico/c2e81f9d23cc11d1a612fd21e4f9de0921a5d0d9/rnt/cascades/facefinder';
+			fetch(cascadeurl).then(function(response) {
+				response.arrayBuffer().then(function(buffer) {
+					var bytes = new Int8Array(buffer);
+					facefinder_classify_region = pico.unpack_cascade(bytes);
+					console.log('* facefinder loaded');
+				})
+			})
+			/*
+				(3) get the drawing context on the canvas and define a function to transform an RGBA image to grayscale
+			*/
+			var ctx = document.getElementById('webcam').getContext('2d');
+			var ctx2 = document.getElementById('movement').getContext('2d');
+			function rgba_to_grayscale(rgba, nrows, ncols) {
+				var gray = new Uint8Array(nrows*ncols);
+				for(var r=0; r<nrows; ++r)
+					for(var c=0; c<ncols; ++c)
+						// gray = 0.2*red + 0.7*green + 0.1*blue
+						gray[r*ncols + c] = (2*rgba[r*4*ncols+4*c+0]+7*rgba[r*4*ncols+4*c+1]+1*rgba[r*4*ncols+4*c+2])/10;
+				return gray;
+			}
+			function scaleBetween(unscaledNum, minAllowed, maxAllowed, min, max) {
+				return (maxAllowed - minAllowed) * (unscaledNum - min) / (max - min) + minAllowed;
+			}
+			/*
+				(4) this function is called each time a video frame becomes available
+			*/
+			var processfn = function(video, dt) {
+				// render the video frame to the canvas element and extract RGBA pixel data
+				ctx.drawImage(video, 0, 0);
+				var rgba = ctx.getImageData(0, 0, 640, 480).data;
+				// prepare input to `run_cascade`
+				image = {
+					"pixels": rgba_to_grayscale(rgba, 480, 640),
+					"nrows": 480,
+					"ncols": 640,
+					"ldim": 640
+				}
+				params = {
+					"shiftfactor": 0.1, // move the detection window by 10% of its size
+					"minsize": 100,     // minimum size of a face
+					"maxsize": 1000,    // maximum size of a face
+					"scalefactor": 1.1  // for multiscale processing: resize the detection window by 10% when moving to the higher scale
+				}
+				// run the cascade over the frame and cluster the obtained detections
+				// dets is an array that contains (r, c, s, q) quadruplets
+				// (representing row, column, scale and detection score)
+				dets = pico.run_cascade(image, facefinder_classify_region, params);
+				dets = update_memory(dets);
+				dets = pico.cluster_detections(dets, 0.2); // set IoU threshold to 0.2
+				// draw detections
+				if (dets.length >= 1) {
+					// check the detection score
+					// if it's above the threshold, draw it
+					// (the constant 50.0 is empirical: other cascades might require a different one)
+					// console.log(dets[i][0])
+					// console.log(dets[i][1])
+					if(dets[0][3]>50)
+					{
+						var r, c, s;
+						//
+						ctx.beginPath();
+						ctx.arc(dets[0][1], dets[0][0], 2, 0, 2*Math.PI, false);
+						ctx.lineWidth = 3;
+						ctx.strokeStyle = 'red';
+						ctx.stroke();
+
+						if (prevCoords) {
+							ctx2.beginPath();
+							// ctx2.arc(dets[0][1], dets[0][0], 1, 0, 2*Math.PI, false);
+							ctx2.moveTo(dets[0][1], dets[0][0])
+							ctx2.lineTo(prevCoords[1], prevCoords[0])
+							ctx2.lineWidth = 1;
+							let alpha = scaleBetween(dets[0][2], 0.1, 1, 100, 200);
+							ctx2.strokeStyle = 'rgba(0, 0, 0, ' + alpha + ')';
+							ctx2.stroke();
+						}
+						prevCoords = [dets[0][0], dets[0][1]]
+					}
+				}
+			}
+			/*
+				(5) instantiate camera handling (see https://github.com/cbrandolino/camvas)
+			*/
+			mycamvas = new camvas(ctx, processfn, stopper);
+			/*
+				(6) it seems that everything went well
+			*/
+			tracking_initialized = true;
+		}
+	</script>
+	<style type="text/css">
+	
+		body {
+			font-family: 'Roboto', sans-serif;
+			height: 500px;
+		}
+		div {
+			display: block;
+			align-items: center;
+		}
+		.center {
+			width:100%;
+			display: flex;
+			justify-content: center;
+		}
+		canvas {
+			margin: 0;
+			position: absolute;
+			top: 50%;
+			left: 50%;
+			-ms-transform: translate(-50%, -50%);
+			transform: translate(-50%, -50%);
+		}
+		#startButton {
+			box-shadow:inset 0px 1px 0px 0px #cf866c;
+			background:linear-gradient(to bottom, #d0451b 5%, #bc3315 100%);
+			background-color:#d0451b;
+			border-radius:3px;
+			border:1px solid #942911;
+			display:inline-block;
+			cursor:pointer;
+			color:#ffffff;
+			font-family:Arial;
+			font-size:13px;
+			padding:6px 24px;
+			text-decoration:none;
+			text-shadow:0px 1px 0px #854629;
+		}
+		#startButton:hover {
+			background:linear-gradient(to bottom, #bc3315 5%, #d0451b 100%);
+			background-color:#bc3315;
+		}
+		#startButton:active {
+			position:relative;
+			top:1px;
+		} 
+		input { 
+			border-color:#cccccc; 
+			border-style:solid; 
+			font-size:14px; 
+			padding:6px; 
+			border-width:1px; 
+			border-radius:7px; 
+			width: 20px;
+		} 
+		input:focus { outline:none; } 
+		#testLengthSpan {
+			margin-right: 5px;
+		} 
+		label { margin-left: 2px; margin-right: 10px; }
+		#testLengthDiv {
+			margin-bottom: 10px;
+		}
+
+		#webcam {
+			display: none;
+		}
+
+		#movement {
+			display: none;
+		}
+
+	</style>
+  </head>
+  <body onload="onPageLoad()">
+	    <div id="wrapper">
+			<div id="testLengthDiv" class="center">
+				<span id="testLengthSpan"> Test length: </span> 
+				<input id="testLengthFieldMinutes" value="10" onchange="onMinChange(this)"></input> <label> minute(s) </label> 
+				<input id="testLengthFieldSeconds" value="0" onchange="onSecChange(this)"></input> <label> second(s) </label>
+			</div>
+			<div id="startButtonDiv" class="center">
+				<button id="startButton" onclick="init()">Start</button>
+			</div>
+			<div id="finalGraph" style="margin: 50px auto; width:600px;height:250px;"></div>
+	    </div>
+		<canvas id="canvas" height=200 width=200></canvas>
+		<!-- <button onclick="drawMovementGraphBackground()">test</button> -->
+		<p><center><canvas id="webcam" width=640 height=480></canvas></center></p>
+		<p><center><canvas id="movement" width=640 height=480></canvas></center></p>
+  </body>
+</html>
